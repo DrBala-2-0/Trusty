@@ -32,7 +32,7 @@ class RelevanceChecker:
             logger.debug("No documents provided. Classifying as NO_MATCH.")
             return "NO_MATCH"
 
-        document_content = "\n\n".join(doc["content"] for doc in documents[:3])
+        document_content = "\n\n".join(doc.page_content for doc in documents[:3]) #doc["content"] changed to doc.page_content
         prompt = RELEVANCE_PROMPT_TEMPLATE.format(question=question, document_content=document_content)
 
         try:

@@ -26,7 +26,7 @@ Respond ONLY with the above format.
 
 class VerificationAgent:
     def check(self, answer: str, documents: list) -> dict:
-        context = "\n\n".join(doc["content"] for doc in documents)
+        context = "\n\n".join(doc.page_content for doc in documents)
         prompt = VERIFICATION_PROMPT_TEMPLATE.format(answer=answer, context=context)
 
         try:

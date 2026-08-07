@@ -22,7 +22,7 @@ FALLBACK_ANSWER = "I cannot answer this question based on the provided documents
 
 class ResearchAgent:
     def generate(self, question: str, documents: list) -> dict:
-        context = "\n\n".join(doc["content"] for doc in documents)
+        context = "\n\n".join(doc.page_content for doc in documents)
         prompt = RESEARCH_PROMPT_TEMPLATE.format(question=question, context=context)
 
         try:
