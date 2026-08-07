@@ -1,7 +1,5 @@
-import logging
+from utils.logging import logger
 from utils.llm_client import ask_llm
-
-logger = logging.getLogger(__name__)
 
 RESEARCH_PROMPT_TEMPLATE = """You are an AI assistant designed to provide precise and factual answers based on the given context.
 

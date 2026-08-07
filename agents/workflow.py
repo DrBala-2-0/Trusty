@@ -1,4 +1,4 @@
-import logging
+from utils.logging import logger
 from typing import TypedDict, List, Dict
 
 from langgraph.graph import StateGraph, END
@@ -6,8 +6,6 @@ from langgraph.graph import StateGraph, END
 from .research_agent import ResearchAgent
 from .verification_agent import VerificationAgent
 from .relevance_checker import RelevanceChecker
-
-logger = logging.getLogger(__name__)
 
 MAX_RESEARCH_ATTEMPTS = 2  # DocChat's own gap: this cap didn't exist there. We're adding it.
 

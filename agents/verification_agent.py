@@ -1,7 +1,5 @@
-import logging
+from utils.logging import logger
 from utils.llm_client import ask_llm
-
-logger = logging.getLogger(__name__)
 
 VERIFICATION_PROMPT_TEMPLATE = """You are an AI assistant designed to verify the accuracy and relevance of answers based on the provided context.
 

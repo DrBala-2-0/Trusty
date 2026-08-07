@@ -1,9 +1,7 @@
-import logging
+from utils.logging import logger
 from pypdf import PdfReader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-logger = logging.getLogger(__name__)
 
 splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
 

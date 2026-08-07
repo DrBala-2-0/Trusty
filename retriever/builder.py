@@ -1,4 +1,4 @@
-import logging
+from utils.logging import logger
 from huggingface_hub import InferenceClient
 from langchain_core.embeddings import Embeddings
 from langchain_community.vectorstores import Chroma
@@ -7,9 +7,6 @@ from langchain.retrievers import EnsembleRetriever
 from langchain_core.documents import Document
 
 from config.settings import settings
-
-logger = logging.getLogger(__name__)
-
 
 class HFEmbeddings(Embeddings):
     """Thin wrapper around HF's current InferenceClient, since langchain_huggingface's

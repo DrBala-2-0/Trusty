@@ -1,7 +1,5 @@
-import logging
+from utils.logging import logger
 from utils.llm_client import ask_llm
-
-logger = logging.getLogger(__name__)
 
 VALID_LABELS = {"CAN_ANSWER", "PARTIAL", "NO_MATCH"}
 
