@@ -1,14 +1,16 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from utils.llm_client import ask_llm
+from agents.workflow import AgentWorkflow
 
-app = FastAPI(title="Trusty (Chapter 2 — naive version)")
+app = FastAPI(title="Trusty (Chapter 3 — agent pipeline)")
+workflow = AgentWorkflow()  # built once at startup, reused across requests
 
 class Question(BaseModel):
     text: str
-    context: str  # hand-pasted for now; real retrieval comes in a later chapter
+    documents: list[str]  # hand-supplied doc chunks for now; real retrieval comes later
 
 @app.post("/ask")
 def ask(q: Question):
-    prompt = f"Context:\n{q.context}\n\nQuestion: {q.text}\n\nAnswer using only the context above."
-    return {"answer": ask_llm(prompt)}
+    docs = [{"content": d} for d in q.documents]
+    result = workflow.full_pipeline(q.text, docs)
+    return result
