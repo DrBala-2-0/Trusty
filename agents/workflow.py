@@ -1,13 +1,13 @@
-from utils.logging import logger
 from typing import TypedDict, List, Dict
 
 from langgraph.graph import StateGraph, END
 
+from utils.logging import logger
 from .research_agent import ResearchAgent
 from .verification_agent import VerificationAgent
 from .relevance_checker import RelevanceChecker
 
-MAX_RESEARCH_ATTEMPTS = 2  # DocChat's own gap: this cap didn't exist there. We're adding it.
+MAX_RESEARCH_ATTEMPTS = 2
 
 
 class AgentState(TypedDict):
@@ -15,6 +15,7 @@ class AgentState(TypedDict):
     documents: List[dict]
     draft_answer: str
     verification_report: str
+    parsed_report: dict
     is_relevant: bool
     research_attempts: int
 
@@ -31,7 +32,6 @@ class AgentWorkflow:
         workflow.add_node("check_relevance", self._check_relevance_step)
         workflow.add_node("research", self._research_step)
         workflow.add_node("verify", self._verification_step)
-
         workflow.set_entry_point("check_relevance")
         workflow.add_conditional_edges(
             "check_relevance",
@@ -67,13 +67,15 @@ class AgentWorkflow:
 
     def _verification_step(self, state: AgentState) -> Dict:
         result = self.verifier.check(state["draft_answer"], state["documents"])
-        return {"verification_report": result["verification_report"]}
+        return {"verification_report": result["raw_report"], "parsed_report": result["parsed_report"]}
 
     def _decide_next_step(self, state: AgentState) -> str:
-        report = state["verification_report"]
+        parsed = state.get("parsed_report", {})
         attempts = state.get("research_attempts", 0)
+        supported = parsed.get("Supported", "").strip().upper()
+        relevant = parsed.get("Relevant", "").strip().upper()
+        needs_retry = supported != "YES" or relevant != "YES"
 
-        needs_retry = "Supported: NO" in report or "Relevant: NO" in report
         if needs_retry and attempts < MAX_RESEARCH_ATTEMPTS:
             logger.info(f"Verification failed (attempt {attempts}). Re-researching.")
             return "re_research"
@@ -83,15 +85,12 @@ class AgentWorkflow:
 
     def full_pipeline(self, question: str, documents: list) -> Dict:
         initial_state = AgentState(
-            question=question,
-            documents=documents,
-            draft_answer="",
-            verification_report="",
-            is_relevant=False,
-            research_attempts=0,
+            question=question, documents=documents, draft_answer="",
+            verification_report="", parsed_report={}, is_relevant=False, research_attempts=0,
         )
         final_state = self.compiled_workflow.invoke(initial_state)
         return {
             "draft_answer": final_state["draft_answer"],
             "verification_report": final_state.get("verification_report", ""),
+            "parsed_report": final_state.get("parsed_report", {}),
         }

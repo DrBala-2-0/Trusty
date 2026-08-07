@@ -1,18 +1,19 @@
 from utils.logging import logger
 from utils.llm_client import ask_llm
+from agents.report_parser import parse_verification_report
 
 VERIFICATION_PROMPT_TEMPLATE = """You are an AI assistant designed to verify the accuracy and relevance of answers based on the provided context.
 
 Instructions:
 - Verify the following answer against the provided context.
-- Check for:
-1. Direct/indirect factual support (YES/NO)
-2. Relevance to the question (YES/NO)
-- Respond in the exact format specified below without adding any unrelated information.
+- Respond in the exact format specified below, filling in each field. Use "None" if not applicable.
 
 Format:
 Supported: YES/NO
+Unsupported Claims: <list any claims not backed by the context, or None>
+Contradictions: <list anything that contradicts the context, or None>
 Relevant: YES/NO
+Additional Details: <any other notes, or None>
 
 Answer: {answer}
 Context:
@@ -21,6 +22,14 @@ Context:
 Respond ONLY with the above format.
 """
 
+DEFAULT_REPORT = {
+    "Supported": "NO",
+    "Unsupported Claims": "Verification failed to run.",
+    "Contradictions": "",
+    "Relevant": "NO",
+    "Additional Details": "",
+}
+
 
 class VerificationAgent:
     def check(self, answer: str, documents: list) -> dict:
@@ -28,9 +37,11 @@ class VerificationAgent:
         prompt = VERIFICATION_PROMPT_TEMPLATE.format(answer=answer, context=context)
 
         try:
-            response = ask_llm(prompt).strip()
+            raw_response = ask_llm(prompt).strip()
+            parsed = parse_verification_report(raw_response)
         except Exception as e:
             logger.error(f"Verification failed: {e}")
-            response = "Supported: NO\nRelevant: NO"
+            raw_response = ""
+            parsed = DEFAULT_REPORT
 
-        return {"verification_report": response, "context_used": context}
+        return {"raw_report": raw_response, "parsed_report": parsed, "context_used": context}
