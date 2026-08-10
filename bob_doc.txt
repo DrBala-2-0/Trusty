@@ -1,0 +1,1 @@
+Trusty's dev machine has an NVIDIA MX150 GPU with 2GB VRAM.

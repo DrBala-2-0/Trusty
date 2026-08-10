@@ -33,11 +33,35 @@ class RetrieverBuilder:
     def __init__(self):
         self.embeddings = HFEmbeddings()
 
-    def build_hybrid_retriever(self, docs: list[Document]) -> EnsembleRetriever:
+    def build_hybrid_retriever(self, docs: list[Document], session_id: str) -> EnsembleRetriever:
+        """Build a hybrid retriever scoped to one session.
+
+        `docs` must be that session's FULL accumulated chunk set (every upload
+        so far, not just the latest one) — the caller (app.py) owns that list.
+        This method always resets the session's Chroma collection and rebuilds
+        it from scratch from that full set, rather than appending to whatever
+        Chroma already has on disk. That's the actual fix for the Ch4-6
+        accumulation bug: the old code appended to a fixed collection_name on
+        every /upload with no reset, so a collection built for session A could
+        never be told "start over" — and BM25 (rebuilt fresh from `docs` here
+        too) only ever saw the latest file, while Chroma silently kept every
+        prior one. Rebuilding both from the same authoritative list keeps them
+        consistent with each other by construction.
+        """
+        collection_name = f"{settings.CHROMA_COLLECTION_NAME}_{session_id}"
+
+        # Reset: drop any existing collection for this session before repopulating.
+        # Safe on a session's first upload too (get_or_create under the hood).
+        Chroma(
+            collection_name=collection_name,
+            embedding_function=self.embeddings,
+            persist_directory=settings.CHROMA_DB_DIR,
+        ).delete_collection()
+
         vector_store = Chroma.from_documents(
             documents=docs,
             embedding=self.embeddings,
-            collection_name=settings.CHROMA_COLLECTION_NAME,
+            collection_name=collection_name,
             persist_directory=settings.CHROMA_DB_DIR,
         )
         vector_retriever = vector_store.as_retriever(search_kwargs={"k": settings.VECTOR_SEARCH_K})
