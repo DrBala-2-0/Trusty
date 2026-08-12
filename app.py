@@ -33,13 +33,18 @@ def upload(file: UploadFile, session_id: str = Depends(resolve_session_id)):
         shutil.copyfileobj(file.file, f)
 
     try:
-        new_docs = load_and_chunk(dest_path)
+        new_docs, skipped = load_and_chunk(dest_path)
     except ValueError as e:
         raise HTTPException(status_code=415, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    
+
     if not new_docs:
+        if skipped:
+            raise HTTPException(
+                status_code=422,
+                detail=f"No extractable content found. All files were skipped: {skipped}",
+            )
         raise HTTPException(status_code=422, detail="No extractable text found in this file.")
 
     # Additive: this session's uploads accumulate rather than replace each other.
@@ -56,8 +61,8 @@ def upload(file: UploadFile, session_id: str = Depends(resolve_session_id)):
         "chunks_added": len(new_docs),
         "chunks_total": len(all_docs),
         "session_id": session_id,
+        "skipped": skipped,
     }
-
 
 class Question(BaseModel):
     text: str
