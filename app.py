@@ -36,7 +36,9 @@ def upload(file: UploadFile, session_id: str = Depends(resolve_session_id)):
         new_docs = load_and_chunk(dest_path)
     except ValueError as e:
         raise HTTPException(status_code=415, detail=str(e))
-
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    
     if not new_docs:
         raise HTTPException(status_code=422, detail="No extractable text found in this file.")
 
