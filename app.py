@@ -1,9 +1,11 @@
 import os
 import shutil
-from fastapi import Depends, FastAPI, HTTPException, UploadFile
+from typing import Optional
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from agents.workflow import AgentWorkflow
-from document_processor.file_handler import load_and_chunk
+from document_processor.file_handler import chunk_text, load_and_chunk
+from document_processor.url_loader import fetch_url_text
 from retriever.builder import RetrieverBuilder
 from utils.logging import logger
 from utils.session import resolve_session_id
@@ -24,20 +26,38 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 @app.post("/upload")
-def upload(file: UploadFile, session_id: str = Depends(resolve_session_id)):
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided.")
+def upload(
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
+    session_id: str = Depends(resolve_session_id),
+):
+    file_given = file is not None and bool(file.filename)
+    if file_given and url:
+        raise HTTPException(status_code=400, detail="Provide either a file or a url, not both.")
+    if not file_given and not url:
+        raise HTTPException(status_code=400, detail="No file or url provided.")
 
-    dest_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(dest_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    try:
-        new_docs, skipped = load_and_chunk(dest_path)
-    except ValueError as e:
-        raise HTTPException(status_code=415, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    if url:
+        try:
+            raw_text = fetch_url_text(url)
+        except ValueError as e:
+            raise HTTPException(status_code=415, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        new_docs = chunk_text(raw_text, source=url)
+        skipped = []
+        label = url
+    else:
+        dest_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(dest_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        try:
+            new_docs, skipped = load_and_chunk(dest_path)
+        except ValueError as e:
+            raise HTTPException(status_code=415, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        label = file.filename
 
     if not new_docs:
         if skipped:
@@ -45,15 +65,14 @@ def upload(file: UploadFile, session_id: str = Depends(resolve_session_id)):
                 status_code=422,
                 detail=f"No extractable content found. All files were skipped: {skipped}",
             )
-        raise HTTPException(status_code=422, detail="No extractable text found in this file.")
+        raise HTTPException(status_code=422, detail="No extractable text found.")
 
-    # Additive: this session's uploads accumulate rather than replace each other.
     session_docs.setdefault(session_id, []).extend(new_docs)
     all_docs = session_docs[session_id]
 
     retrievers[session_id] = retriever_builder.build_hybrid_retriever(all_docs, session_id)
     logger.info(
-        f"[{session_id}] Indexed {file.filename}: +{len(new_docs)} chunks "
+        f"[{session_id}] Indexed {label}: +{len(new_docs)} chunks "
         f"({len(all_docs)} total for this session)"
     )
     return {
@@ -63,6 +82,8 @@ def upload(file: UploadFile, session_id: str = Depends(resolve_session_id)):
         "session_id": session_id,
         "skipped": skipped,
     }
+
+
 
 class Question(BaseModel):
     text: str

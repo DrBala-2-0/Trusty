@@ -13,3 +13,5 @@ rank_bm25==0.2.2
 python-multipart==0.0.20
 huggingface_hub>=0.28.0,<1.0.0
 openpyxl==3.1.5
+requests==2.32.3
+trafilatura==1.12.2
