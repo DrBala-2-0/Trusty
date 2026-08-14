@@ -1,5 +1,7 @@
 import os
 import shutil
+import subprocess
+import sys
 from typing import Optional
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -107,3 +109,51 @@ def ask(q: Question, session_id: str = Depends(resolve_session_id)):
     except Exception as e:
         logger.error(f"[{session_id}] Pipeline failed for question {q.text!r}: {e}")
         raise HTTPException(status_code=500, detail=f"Something went wrong processing this question: {e}")
+
+
+@app.post("/evaluate")
+def evaluate(base_url: str = "http://localhost:8000"):
+    """Run the golden test set against a live server and return structured results.
+
+    Calls tests/evaluator.py as a subprocess rather than importing it directly,
+    so the evaluator runs in a clean process with no shared state from the
+    current server — the same isolation a real CI invocation would have.
+
+    Args:
+        base_url: the server URL the evaluator should point at.
+                  Defaults to http://localhost:8000 (i.e. itself).
+    """
+    evaluator_path = os.path.join(os.path.dirname(__file__), "tests", "evaluator.py")
+
+    if not os.path.exists(evaluator_path):
+        raise HTTPException(
+            status_code=500,
+            detail="Evaluator not found. Expected at tests/evaluator.py."
+        )
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-X", "utf8", evaluator_path, "--base-url", base_url],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=300,
+        )
+        passed = proc.returncode == 0
+        return {
+            "passed": passed,
+            "exit_code": proc.returncode,
+            "output": proc.stdout,
+            "errors": proc.stderr or None,
+        }
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=504,
+            detail="Evaluation timed out after 5 minutes."
+        )
+    except Exception as e:
+        logger.error(f"Evaluation subprocess failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Evaluation failed to run: {e}"
+        )

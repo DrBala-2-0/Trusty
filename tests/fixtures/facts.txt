@@ -1,0 +1,8 @@
+Trusty is a document question-answering application built with FastAPI and LangGraph.
+It uses a hybrid retriever combining BM25 and Chroma vector search.
+The primary LLM provider is Groq, with OpenRouter as a fallback.
+Trusty supports PDF, TXT, CSV, XLSX, images, audio, ZIP archives, and URLs as input formats.
+The system uses three agents: a relevance checker, a research agent, and a verification agent.
+Each user session is isolated using a session ID passed in the X-Session-ID header.
+Trusty's verification agent checks every answer against the source documents before returning it.
+If an answer is not supported by the documents, Trusty retries up to a maximum of two attempts.
