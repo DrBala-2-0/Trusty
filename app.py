@@ -12,6 +12,7 @@ from retriever.builder import RetrieverBuilder
 from utils.logging import logger
 from utils.session import resolve_session_id
 from utils.tracer import Tracer
+from utils.budget import Budget, BudgetExceededError
 
 app = FastAPI(title="Trusty (Chapter 7 — multi-user retrieval)")
 workflow = AgentWorkflow()
@@ -23,6 +24,12 @@ retriever_builder = RetrieverBuilder()
 # persistence isn't warranted by anything the blueprint actually requires.
 session_docs: dict[str, list] = {}   # session_id -> every chunk uploaded so far, across all /upload calls
 retrievers: dict[str, object] = {}   # session_id -> that session's current hybrid retriever
+session_budgets: dict[str, Budget] = {}   # session_id -> that session's LLM call budget
+
+# Maximum LLM calls allowed per session before /ask returns 429.
+# One /ask call consumes one unit regardless of how many internal
+# agent steps run — the budget tracks requests, not tokens.
+SESSION_LLM_CALL_LIMIT = 20
 
 UPLOAD_DIR = ".cache/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -102,17 +109,52 @@ def ask(q: Question, session_id: str = Depends(resolve_session_id)):
             detail="No document indexed yet for this session. Call /upload first.",
         )
 
+    # Mint a budget for this session on its first /ask call.
+    if session_id not in session_budgets:
+        session_budgets[session_id] = Budget(
+            dimension="llm_calls",
+            limit=SESSION_LLM_CALL_LIMIT,
+            warn_at=0.8,
+        )
+    budget = session_budgets[session_id]
+
+    # Pre-flight budget check — consume one unit then raise if over ceiling.
+    # This happens before any LLM call so we never start work we'd discard.
+    try:
+        budget.check()
+        budget.consume()
+    except BudgetExceededError as e:
+        logger.warning(
+            f"[{session_id}] Budget exhausted: {e}"
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Session budget exhausted: {int(e.used)}/{int(e.limit)} "
+                f"LLM calls used. Start a new session to continue."
+            ),
+        )
+
     tracer = Tracer()
     try:
         documents = retrievers[session_id].invoke(q.text)
         tracer.record_retrieval(session_id, len(documents), documents)
         result = workflow.full_pipeline(q.text, documents, tracer=tracer)
-        logger.info(f"[{session_id}] Answered question: {q.text[:60]!r}")
-        return {**result, "trace": tracer.to_dict()}
+        logger.info(
+            f"[{session_id}] Answered question: {q.text[:60]!r} "
+            f"(budget: {budget.used:.0f}/{budget.limit:.0f})"
+        )
+        return {
+            **result,
+            "trace": tracer.to_dict(),
+            "budget": budget.summary(),
+        }
     except Exception as e:
         logger.error(f"[{session_id}] Pipeline failed for question {q.text!r}: {e}")
-        raise HTTPException(status_code=500, detail=f"Something went wrong processing this question: {e}")
-
+        raise HTTPException(
+            status_code=500,
+            detail=f"Something went wrong processing this question: {e}",
+        )
 
 @app.post("/evaluate")
 def evaluate(base_url: str = "http://localhost:8000"):

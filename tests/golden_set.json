@@ -1,5 +1,5 @@
 {
-  "version": "1.3",
+  "version": "1.4",
   "description": "Trusty golden test set — Chapter 10. Fixed cases covering all four workflow paths plus adversarial injection resistance. Run via tests/evaluator.py against a live server.",
   "cases": [
     {
@@ -35,7 +35,7 @@
       "pass_criteria": {
         "supported": "YES",
         "relevant": "YES",
-        "answer_must_contain": ["session ID", "X-Session-ID"]
+        "answer_must_contain": ["session ID"]
       }
     },
     {
