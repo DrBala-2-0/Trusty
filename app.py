@@ -11,6 +11,7 @@ from document_processor.url_loader import fetch_url_text
 from retriever.builder import RetrieverBuilder
 from utils.logging import logger
 from utils.session import resolve_session_id
+from utils.tracer import Tracer
 
 app = FastAPI(title="Trusty (Chapter 7 — multi-user retrieval)")
 workflow = AgentWorkflow()
@@ -101,11 +102,13 @@ def ask(q: Question, session_id: str = Depends(resolve_session_id)):
             detail="No document indexed yet for this session. Call /upload first.",
         )
 
+    tracer = Tracer()
     try:
         documents = retrievers[session_id].invoke(q.text)
-        result = workflow.full_pipeline(q.text, documents)
+        tracer.record_retrieval(session_id, len(documents), documents)
+        result = workflow.full_pipeline(q.text, documents, tracer=tracer)
         logger.info(f"[{session_id}] Answered question: {q.text[:60]!r}")
-        return result
+        return {**result, "trace": tracer.to_dict()}
     except Exception as e:
         logger.error(f"[{session_id}] Pipeline failed for question {q.text!r}: {e}")
         raise HTTPException(status_code=500, detail=f"Something went wrong processing this question: {e}")
