@@ -15,6 +15,7 @@ from utils.tracer import Tracer
 from utils.budget import Budget, BudgetExceededError
 from utils.cache import ResponseCache
 from utils.formatter import FormatterError, apply_format, validate_format
+from config.settings import settings
 
 app = FastAPI(title="Trusty (Chapter 7 — multi-user retrieval)")
 workflow = AgentWorkflow()
@@ -31,11 +32,11 @@ session_budgets: dict[str, Budget] = {}   # session_id -> that session's LLM cal
 # Maximum LLM calls allowed per session before /ask returns 429.
 # One /ask call consumes one unit regardless of how many internal
 # agent steps run — the budget tracks requests, not tokens.
-SESSION_LLM_CALL_LIMIT = 20
+SESSION_LLM_CALL_LIMIT = settings.SESSION_LLM_CALL_LIMIT
 
 # Shared across all sessions — keyed by (content hash, normalised question)
 # so cross-session cache hits are correct (same docs + same question = same answer).
-response_cache = ResponseCache(max_size=500)
+response_cache = ResponseCache(max_size=settings.RESPONSE_CACHE_MAX_SIZE)
 
 
 UPLOAD_DIR = ".cache/uploads"

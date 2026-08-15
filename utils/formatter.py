@@ -170,8 +170,24 @@ def apply_format(
         }
 
     elif response_format == "json":
+        # If the research agent returned valid JSON ({"answer": "..."}),
+        # extract the answer string from it. If not (refusal path or LLM
+        # didn't comply with the instruction), use draft_answer as-is.
+        # Either way, the formatter assembles the full structured envelope.
+        answer_text = draft_answer
+        try:
+            parsed_draft = json.loads(draft_answer)
+            if isinstance(parsed_draft, dict) and "answer" in parsed_draft:
+                answer_text = parsed_draft["answer"]
+        except (json.JSONDecodeError, ValueError):
+            # LLM returned prose instead of JSON -- use it directly.
+            # This happens on refusal paths ("I cannot answer...") and is
+            # correct behaviour: wrap the prose in the structured envelope
+            # rather than failing the whole request.
+            pass
+
         structured = {
-            "answer": draft_answer,
+            "answer": answer_text,
             "sources": sources,
             "verification": {
                 "supported": parsed_report.get("Supported", "--"),

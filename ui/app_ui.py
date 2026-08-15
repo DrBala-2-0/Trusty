@@ -205,7 +205,7 @@ def handle_format_change(format_choice: str):
 def handle_upload(file, url_input, session_state):
     session_id = session_state.get("session_id")
     if not session_id:
-        return "[WARNING] No session -- click 'New Session' first.", session_state
+        return "[WARNING] No session -- click 'New Session' first.", session_state, gr.update()
     if file is None and not url_input.strip():
         return "[WARNING] Please select a file or enter a URL.", session_state
     try:
@@ -228,22 +228,27 @@ def handle_upload(file, url_input, session_state):
             msg = f"[OK] URL indexed -- {added} chunks added ({total} total this session)"
         session_state = dict(session_state)
         session_state["uploads"] = session_state.get("uploads", 0) + 1
-        return msg, session_state
+        return msg, session_state, gr.update(value=None)
     except requests.HTTPError as e:
         try:
             detail = e.response.json().get("detail", str(e))
         except Exception:
             detail = str(e)
-        return f"[ERROR] Upload failed: {detail}", session_state
+        return f"[ERROR] Upload failed: {detail}", session_state, gr.update()
     except Exception as e:
-        return f"[ERROR] Upload error: {e}", session_state
+        return f"[ERROR] Upload error: {e}", session_state, gr.update()
 
 
 def handle_ask(question, format_choice, template_input, session_state):
     """Returns 8 values: answer_md, answer_json, answer_df,
     cached_label, verification, budget, trace, error."""
     session_id = session_state.get("session_id")
-    empty = ("", "", None, "", "", "", "")
+    empty = (
+        gr.update(value="", visible=False),
+        gr.update(value="", visible=False),
+        gr.update(value=None, visible=False),
+        "", "", "", "",
+    )
 
     if not session_id:
         return *empty, "[WARNING] No session -- click 'New Session' first."
@@ -269,9 +274,9 @@ def handle_ask(question, format_choice, template_input, session_state):
 
         if fmt == "json":
             return (
-                "",
-                formatted_answer,
-                None,
+                gr.update(value="", visible=False),
+                gr.update(value=formatted_answer, visible=True),
+                gr.update(value=None, visible=False),
                 cached_label,
                 verification,
                 budget_str,
@@ -281,9 +286,9 @@ def handle_ask(question, format_choice, template_input, session_state):
         elif fmt == "markdown_table":
             df = parse_markdown_table(formatted_answer)
             return (
-                "",
-                "",
-                df,
+                gr.update(value="", visible=False),
+                gr.update(value="", visible=False),
+                gr.update(value=df, visible=True),
                 cached_label,
                 verification,
                 budget_str,
@@ -292,9 +297,9 @@ def handle_ask(question, format_choice, template_input, session_state):
             )
         else:
             return (
-                formatted_answer,
-                "",
-                None,
+                gr.update(value=formatted_answer, visible=True),
+                gr.update(value="", visible=False),
+                gr.update(value=None, visible=False),
                 cached_label,
                 verification,
                 budget_str,
@@ -398,8 +403,8 @@ def build_ui():
 
         # Three answer output components -- only one populated per response
         answer_md = gr.Markdown("")
-        answer_json = gr.Code("", language="json", label="Answer (JSON)")
-        answer_df = gr.Dataframe(label="Answer (Table)")
+        answer_json = gr.Code("", language="json", label="Answer (JSON)", visible=False)
+        answer_df = gr.Dataframe(label="Answer (Table)", visible=False)
 
         with gr.Row():
             with gr.Column(scale=1):
@@ -428,7 +433,7 @@ def build_ui():
         upload_btn.click(
             fn=handle_upload,
             inputs=[file_input, url_input, session_state],
-            outputs=[upload_status, session_state],
+            outputs=[upload_status, session_state, file_input],
         )
 
         ask_outputs = [
@@ -446,12 +451,14 @@ def build_ui():
             fn=handle_ask,
             inputs=[question_input, format_selector, template_input, session_state],
             outputs=ask_outputs,
+            show_progress="minimal",
         )
 
         question_input.submit(
             fn=handle_ask,
             inputs=[question_input, format_selector, template_input, session_state],
             outputs=ask_outputs,
+            show_progress="minimal",
         )
 
     return demo
