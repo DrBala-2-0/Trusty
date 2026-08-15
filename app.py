@@ -14,6 +14,7 @@ from utils.session import resolve_session_id
 from utils.tracer import Tracer
 from utils.budget import Budget, BudgetExceededError
 from utils.cache import ResponseCache
+from utils.formatter import FormatterError, apply_format, validate_format
 
 app = FastAPI(title="Trusty (Chapter 7 — multi-user retrieval)")
 workflow = AgentWorkflow()
@@ -103,6 +104,8 @@ def upload(
 
 class Question(BaseModel):
     text: str
+    response_format: str = "text"
+    response_template: str | None = None
 
 
 @app.post("/ask")
@@ -114,6 +117,13 @@ def ask(q: Question, session_id: str = Depends(resolve_session_id)):
             status_code=400,
             detail="No document indexed yet for this session. Call /upload first.",
         )
+
+    # Validate format before cache check or any LLM work -- bad requests
+    # are rejected immediately, before consuming budget or retrieval time.
+    try:
+        validate_format(q.response_format, q.response_template)
+    except FormatterError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Check cache first -- a hit returns immediately, consuming no budget.
     docs = session_docs.get(session_id, [])
@@ -129,7 +139,16 @@ def ask(q: Question, session_id: str = Depends(resolve_session_id)):
         logger.info(
             f"[{session_id}] Cache hit for question: {q.text[:60]!r}"
         )
-        return {**cached, "cached": True, "budget": budget.summary()}
+        # Re-apply format on cache hit -- the cached result has draft_answer
+        # and parsed_report; chunk_sources was stored at cache time.
+        formatted = apply_format(
+            q.response_format,
+            q.response_template,
+            cached["draft_answer"],
+            cached.get("parsed_report", {}),
+            cached.get("chunk_sources", []),
+        )
+        return {**cached, "cached": True, "budget": budget.summary(), **formatted}
 
     # Cache miss -- enforce budget before doing any LLM work.
     if session_id not in session_budgets:
@@ -157,7 +176,26 @@ def ask(q: Question, session_id: str = Depends(resolve_session_id)):
     try:
         documents = retrievers[session_id].invoke(q.text)
         tracer.record_retrieval(session_id, len(documents), documents)
-        result = workflow.full_pipeline(q.text, documents, tracer=tracer)
+        result = workflow.full_pipeline(
+            q.text,
+            documents,
+            tracer=tracer,
+            response_format=q.response_format,
+        )
+
+        # Store chunk_sources in result so cache hits can apply formatting
+        # without re-invoking the retriever.
+        result["chunk_sources"] = [
+            {"source": doc.metadata.get("source", "unknown")} for doc in documents
+        ]
+
+        formatted = apply_format(
+            q.response_format,
+            q.response_template,
+            result["draft_answer"],
+            result.get("parsed_report", {}),
+            documents,
+        )
         response_cache.set(q.text, docs, result)
         logger.info(
             f"[{session_id}] Answered question: {q.text[:60]!r} "
@@ -168,6 +206,7 @@ def ask(q: Question, session_id: str = Depends(resolve_session_id)):
             "cached": False,
             "trace": tracer.to_dict(),
             "budget": budget.summary(),
+            **formatted,
         }
     except Exception as e:
         logger.error(f"[{session_id}] Pipeline failed for question {q.text!r}: {e}")

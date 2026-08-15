@@ -20,6 +20,7 @@ class AgentState(TypedDict):
     is_relevant: bool
     research_attempts: int
     tracer: Optional[object]   # Tracer instance, injected per request
+    response_format: str       # Output format requested by the caller
 
 
 class AgentWorkflow:
@@ -71,7 +72,9 @@ class AgentWorkflow:
     def _research_step(self, state: AgentState) -> Dict:
         tracer: Optional[Tracer] = state.get("tracer")
         result = self.researcher.generate(
-            state["question"], state["documents"]
+            state["question"],
+            state["documents"],
+            response_format=state.get("response_format", "text"),
         )
         attempt = state.get("research_attempts", 0) + 1
 
@@ -137,7 +140,11 @@ class AgentWorkflow:
         return "end"
 
     def full_pipeline(
-        self, question: str, documents: list, tracer: Optional[Tracer] = None
+        self,
+        question: str,
+        documents: list,
+        tracer: Optional[Tracer] = None,
+        response_format: str = "text",
     ) -> Dict:
         initial_state = AgentState(
             question=question,
@@ -148,6 +155,7 @@ class AgentWorkflow:
             is_relevant=False,
             research_attempts=0,
             tracer=tracer,
+            response_format=response_format,
         )
         final_state = self.compiled_workflow.invoke(initial_state)
 

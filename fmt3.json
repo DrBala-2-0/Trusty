@@ -1,0 +1,1 @@
+﻿{"text": "What LLM provider does Trusty use?", "response_format": "template", "response_template": "Answer: {answer}\nSources: {sources}\nConfidence: {confidence}"}
