@@ -13,6 +13,7 @@ Prerequisites:
     - facts.txt, offtopic.txt, injection.txt must exist in tests/fixtures/
 """
 
+import re as _re
 import argparse
 import json
 import os
@@ -51,13 +52,26 @@ def upload_fixture(base_url: str, fixture_name: str, session_id: str) -> None:
         )
 
 
-def ask_question(base_url: str, question: str, session_id: str) -> dict:
+def ask_question(
+    base_url: str,
+    question: str,
+    session_id: str,
+    enable_analysis: bool = False,
+    data_description: str = "",
+    data_csv: str = "",
+) -> dict:
     """POST a question to /ask and return the parsed JSON response."""
+    payload = {"text": question}
+    if enable_analysis:
+        payload["enable_analysis"] = True
+        payload["data_description"] = data_description
+        payload["data_csv"] = data_csv
+
     response = requests.post(
         f"{base_url}/ask",
-        json={"text": question},
+        json=payload,
         headers={"X-Session-ID": session_id},
-        timeout=60,
+        timeout=120,   # analysis cases take longer — sandbox + two LLM calls
     )
 
     if response.status_code != 200:
@@ -76,30 +90,31 @@ def evaluate_case(result: dict, criteria: dict) -> tuple[bool, list[str]]:
     """
     Check a single case's result against its pass_criteria.
     Returns (passed: bool, reasons: list[str]).
-    reasons is empty on a full pass; contains one line per failed check.
     """
     failures = []
-    draft = result.get("draft_answer", "").lower()
+    _raw = result.get("draft_answer", "")
+    # Strip markdown bold/italic markers and normalize whitespace
+    # so phrase checks work regardless of LLM formatting choices
+    _raw = _re.sub(r'\*+', '', _raw)          # remove * markers
+    _raw = _re.sub(r'\s+', ' ', _raw)         # collapse all whitespace
+    draft = _raw.lower()
     parsed = result.get("parsed_report", {})
+    code_result = result.get("code_result") or {}
 
-    # Supported / Relevant fields (only checked when criteria specifies them)
+    # Supported / Relevant fields
     if "supported" in criteria:
         actual = parsed.get("Supported", "").strip().upper()
         expected = criteria["supported"].upper()
         if actual != expected:
-            failures.append(
-                f"Supported: expected {expected}, got '{actual}'"
-            )
+            failures.append(f"Supported: expected {expected}, got '{actual}'")
 
     if "relevant" in criteria:
         actual = parsed.get("Relevant", "").strip().upper()
         expected = criteria["relevant"].upper()
         if actual != expected:
-            failures.append(
-                f"Relevant: expected {expected}, got '{actual}'"
-            )
+            failures.append(f"Relevant: expected {expected}, got '{actual}'")
 
-    # Answer content checks (case-insensitive)
+    # Answer content checks
     for phrase in criteria.get("answer_must_contain", []):
         if phrase.lower() not in draft:
             failures.append(f"Answer missing expected phrase: '{phrase}'")
@@ -107,6 +122,35 @@ def evaluate_case(result: dict, criteria: dict) -> tuple[bool, list[str]]:
     for phrase in criteria.get("answer_must_not_contain", []):
         if phrase.lower() in draft:
             failures.append(f"Answer contains forbidden phrase: '{phrase}'")
+
+    # Option 2: code_result checks
+    if "code_result_supported" in criteria:
+        expected = criteria["code_result_supported"]
+        actual = code_result.get("supported", False)
+        if actual != expected:
+            failures.append(
+                f"code_result.supported: expected {expected}, got {actual}"
+            )
+
+    if criteria.get("code_result_has_chart"):
+        if not code_result.get("chart_b64"):
+            failures.append("code_result.chart_b64: expected a chart but got None")
+
+    if "code_result_error_contains" in criteria:
+        error = (code_result.get("error") or "").lower()
+        phrase = criteria["code_result_error_contains"].lower()
+        if phrase not in error:
+            failures.append(
+                f"code_result.error: expected to contain '{phrase}', got '{error[:80]}'"
+            )
+
+    if "verification_mode" in criteria:
+        actual = result.get("verification_mode", "document")
+        expected = criteria["verification_mode"]
+        if actual != expected:
+            failures.append(
+                f"verification_mode: expected '{expected}', got '{actual}'"
+            )
 
     return (len(failures) == 0), failures
 
@@ -166,7 +210,14 @@ def run_evaluation(base_url: str) -> int:
 
         # Ask the question.
         try:
-            result = ask_question(base_url, question, session_id)
+            result = ask_question(
+                base_url,
+                question,
+                session_id,
+                enable_analysis=case.get("enable_analysis", False),
+                data_description=case.get("data_description", ""),
+                data_csv=case.get("data_csv", ""),
+            )
         except Exception as e:
             print(f"         Ask      : FAILED — {e}")
             print(f"         Result   : SKIP (ask error)\n")
@@ -180,6 +231,11 @@ def run_evaluation(base_url: str) -> int:
 
         print(f"         Answer   : {draft[:120]}{'...' if len(draft) > 120 else ''}")
         print(f"         Verified : Supported={supported}  Relevant={relevant}")
+        if case.get("enable_analysis"):
+            cr = result.get("code_result") or {}
+            print(f"         Analysis : supported={cr.get('supported')}  "
+                  f"backend={cr.get('backend')}  "
+                  f"mode={result.get('verification_mode')}")
 
         passed, failures = evaluate_case(result, criteria)
 
