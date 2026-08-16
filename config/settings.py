@@ -30,5 +30,10 @@ class Settings:
     # Cache
     RESPONSE_CACHE_MAX_SIZE: int = int(os.getenv("RESPONSE_CACHE_MAX_SIZE", "500"))
 
+    # Sandbox (Option 2 — Chapter 17)
+    SANDBOX_BACKEND: str = os.getenv("SANDBOX_BACKEND", "docker")
+    SANDBOX_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_TIMEOUT_SECONDS", "30"))
+    SANDBOX_DOCKER_IMAGE: str = os.getenv("SANDBOX_DOCKER_IMAGE", "trusty-sandbox:latest")
+
 
 settings = Settings()
