@@ -1,13 +1,11 @@
 """
-Trusty Chapter 20 -- Thin-client Gradio UI (updated for Option 2 analysis).
+Trusty Chapter 24 -- Thin-client Gradio UI (updated for Option 3 A2A).
 
-Changes from Ch15:
-- Analysis toggle (enable_analysis) in Ask section
-- Colab URL input (sandbox_backend selector)
-- Data description + CSV inputs for structured data questions
-- Chart display panel (base64 PNG rendered inline)
-- Code output accordion showing generated code + stdout
-- Execution-grounded verification shown alongside document verification
+Changes from Ch20:
+- External Sources accordion with peer URL input (Option 3)
+- Peer responses panel showing A2A results with trust levels
+- ask_question routes to /ask_with_external when peer URLs are supplied
+- format_verification extended to show provenance check result
 
 Runs as a separate process from the FastAPI server:
     Terminal 1: uvicorn app:app --reload
@@ -75,13 +73,32 @@ def ask_question(
     question: str,
     session_id: str,
     response_format: str,
-    response_template: str | None = None,
+    response_template=None,
     enable_analysis: bool = False,
     sandbox_backend: str = "docker",
     colab_url: str = "",
     data_description: str = "",
     data_csv: str = "",
+    peer_urls=None,
 ) -> dict:
+    # Option 3: route to /ask_with_external when peer URLs are provided
+    if peer_urls:
+        response = requests.post(
+            f"{API_BASE}/ask_with_external",
+            json={"text": question, "peer_urls": peer_urls},
+            headers={"X-Session-ID": session_id},
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = response.json()
+        local = data.get("local_result") or {}
+        local["peer_responses"] = data.get("peer_responses", [])
+        local["peer_count"] = data.get("peer_count", 0)
+        if "formatted_answer" not in local and "draft_answer" in local:
+            local["formatted_answer"] = local["draft_answer"]
+        local["response_format"] = response_format
+        return local
+
     payload = {"text": question, "response_format": response_format}
     if response_template:
         payload["response_template"] = response_template
@@ -97,7 +114,7 @@ def ask_question(
         f"{API_BASE}/ask",
         json=payload,
         headers={"X-Session-ID": session_id},
-        timeout=180,   # analysis cases need extra time
+        timeout=180,
     )
     response.raise_for_status()
     return response.json()
@@ -107,14 +124,14 @@ def ask_question(
 # Response formatting helpers
 # ---------------------------------------------------------------------------
 
-def format_verification(parsed_report: dict, code_parsed_report: dict | None,
-                        verification_mode: str) -> str:
+def format_verification(parsed_report, code_parsed_report, provenance_parsed_report, verification_mode):
     if not parsed_report:
         return ""
     supported = parsed_report.get("Supported", "--")
     relevant = parsed_report.get("Relevant", "--")
     unsupported = parsed_report.get("Unsupported Claims", "None")
     contradictions = parsed_report.get("Contradictions", "None")
+    additional = parsed_report.get("Additional Details", "None")
     supported_label = "[YES]" if supported == "YES" else "[NO]"
     relevant_label = "[YES]" if relevant == "YES" else "[NO]"
     lines = [
@@ -127,7 +144,8 @@ def format_verification(parsed_report: dict, code_parsed_report: dict | None,
         lines.append(f"**Unsupported Claims:** {unsupported}")
     if contradictions and contradictions.lower() not in ("none", ""):
         lines.append(f"**Contradictions:** {contradictions}")
-
+    if additional and additional.lower() not in ("none", ""):
+        lines.append(f"**Additional Details:** {additional}")
     if code_parsed_report:
         code_supported = code_parsed_report.get("Supported", "--")
         code_label = "[YES]" if code_supported == "YES" else "[NO]"
@@ -135,11 +153,38 @@ def format_verification(parsed_report: dict, code_parsed_report: dict | None,
         code_unsupported = code_parsed_report.get("Unsupported Claims", "None")
         if code_unsupported and code_unsupported.lower() not in ("none", ""):
             lines.append(f"**Execution unsupported:** {code_unsupported}")
-
+    if provenance_parsed_report:
+        prov_supported = provenance_parsed_report.get("Supported", "--")
+        prov_label = "[YES]" if prov_supported == "YES" else "[NO]"
+        lines.append(f"\n**Provenance check:** {prov_label}")
+        prov_contradictions = provenance_parsed_report.get("Contradictions", "None")
+        if prov_contradictions and prov_contradictions.lower() not in ("none", ""):
+            lines.append(f"**Peer contradictions:** {prov_contradictions}")
     return "\n\n".join(lines)
 
 
-def format_budget(budget: dict) -> str:
+def format_peer_responses(peer_responses):
+    if not peer_responses:
+        return ""
+    lines = ["### Peer Responses\n"]
+    for i, peer in enumerate(peer_responses, 1):
+        trust = peer.get("trust_level", "unknown")
+        url = peer.get("peer_url", "unknown")
+        answer = peer.get("answer", "").strip()
+        error = peer.get("error")
+        freshness = peer.get("freshness_ts", "")[:19].replace("T", " ")
+        trust_label = {"high": "[HIGH]", "medium": "[MED]",
+                       "low": "[LOW]", "unknown": "[?]"}.get(trust, "[?]")
+        lines.append(f"**Peer {i}** `{url}` -- trust: {trust_label} -- {freshness}")
+        if error:
+            lines.append(f"> [ERROR] {error[:120]}")
+        else:
+            lines.append(f"> {answer[:200]}{'...' if len(answer) > 200 else ''}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def format_budget(budget):
     if not budget:
         return ""
     used = int(budget.get("used", 0))
@@ -157,7 +202,7 @@ def format_budget(budget: dict) -> str:
     )
 
 
-def format_trace(trace: dict) -> str:
+def format_trace(trace):
     if not trace:
         return ""
     steps = trace.get("steps", [])
@@ -195,8 +240,7 @@ def format_trace(trace: dict) -> str:
     return "\n\n".join(lines)
 
 
-def format_code_result(code_result: dict | None) -> tuple[str, str]:
-    """Returns (code_text, stdout_text) for the code output accordion."""
+def format_code_result(code_result):
     if not code_result:
         return "", ""
     code = code_result.get("code", "")
@@ -204,7 +248,6 @@ def format_code_result(code_result: dict | None) -> tuple[str, str]:
     stderr = code_result.get("stderr", "").strip()
     error = code_result.get("error", "")
     backend = code_result.get("backend", "")
-
     stdout_parts = []
     if stdout:
         stdout_parts.append(stdout)
@@ -214,16 +257,14 @@ def format_code_result(code_result: dict | None) -> tuple[str, str]:
         stdout_parts.append(f"[error]\n{error}")
     if backend:
         stdout_parts.append(f"\n[backend: {backend}]")
-
     return code, "\n\n".join(stdout_parts)
 
 
-def b64_to_image_path(chart_b64: str | None) -> str | None:
-    """Decode a base64 PNG and save to a temp file for gr.Image."""
+def b64_to_image_path(chart_b64):
     if not chart_b64:
         return None
     try:
-        import tempfile, os
+        import tempfile
         img_bytes = base64.b64decode(chart_b64)
         tmp = tempfile.NamedTemporaryFile(
             delete=False, suffix=".png", prefix="trusty_chart_"
@@ -235,7 +276,7 @@ def b64_to_image_path(chart_b64: str | None) -> str | None:
         return None
 
 
-def parse_markdown_table(md_table: str) -> pd.DataFrame | None:
+def parse_markdown_table(md_table):
     try:
         lines = [
             line.strip() for line in md_table.strip().splitlines()
@@ -264,23 +305,23 @@ def handle_new_session():
     return state, label
 
 
-def handle_format_change(format_choice: str):
+def handle_format_change(format_choice):
     return gr.update(visible=(format_choice == "Template"))
 
 
-def handle_analysis_toggle(enabled: bool):
+def handle_analysis_toggle(enabled):
     return gr.update(visible=enabled)
 
 
-def handle_backend_change(backend: str):
-    return gr.update(visible=(backend == "colab"))
+def handle_backend_change(backend):
+    return gr.update(visible=(backend == "Colab GPU"))
 
 
 def handle_upload(file, url_input, session_state):
     session_id = session_state.get("session_id")
     if not session_id:
         return "[WARNING] No session -- click 'New Session' first.", session_state, gr.update()
-    if file is None and not url_input.strip():
+    if file is None and not (url_input or "").strip():
         return "[WARNING] Please select a file or enter a URL.", session_state, gr.update()
     try:
         if file is not None:
@@ -317,14 +358,9 @@ def handle_ask(
     question, format_choice, template_input,
     enable_analysis, backend_choice, colab_url_input,
     data_description_input, data_csv_input,
+    peer_urls_input,
     session_state,
 ):
-    """
-    Returns 11 values:
-    answer_md, answer_json, answer_df,
-    chart_img, code_text, stdout_text,
-    cached_label, verification, budget, trace, error
-    """
     session_id = session_state.get("session_id")
     empty = (
         gr.update(value="", visible=False),
@@ -333,12 +369,13 @@ def handle_ask(
         gr.update(value=None, visible=False),
         gr.update(value="", visible=False),
         gr.update(value="", visible=False),
+        gr.update(value="", visible=False),
         "", "", "", "",
     )
 
     if not session_id:
         return *empty, "[WARNING] No session -- click 'New Session' first."
-    if not question.strip():
+    if not (question or "").strip():
         return *empty, "[WARNING] Please enter a question."
     if session_state.get("uploads", 0) == 0:
         return *empty, "[WARNING] No documents uploaded yet."
@@ -346,6 +383,10 @@ def handle_ask(
     fmt_key = FORMAT_MAP.get(format_choice, "text")
     template = template_input.strip() if fmt_key == "template" else None
     backend = "colab" if (backend_choice or "") == "Colab GPU" else "docker"
+    peer_urls = [
+        u.strip() for u in (peer_urls_input or "").splitlines()
+        if u.strip()
+    ] or None
 
     try:
         result = ask_question(
@@ -355,6 +396,7 @@ def handle_ask(
             colab_url=colab_url_input,
             data_description=data_description_input,
             data_csv=data_csv_input,
+            peer_urls=peer_urls,
         )
 
         formatted_answer = result.get("formatted_answer", result.get("draft_answer", ""))
@@ -366,23 +408,25 @@ def handle_ask(
         verification = format_verification(
             result.get("parsed_report", {}),
             result.get("code_parsed_report"),
+            result.get("provenance_parsed_report"),
             verification_mode,
         )
         budget_str = format_budget(result.get("budget", {}))
         trace_str = format_trace(result.get("trace", {}))
 
-        # Chart
         code_result = result.get("code_result")
         chart_b64 = (code_result or {}).get("chart_b64")
         chart_path = b64_to_image_path(chart_b64)
         chart_update = gr.update(value=chart_path, visible=bool(chart_path))
 
-        # Code output
         code_text, stdout_text = format_code_result(code_result)
         code_update = gr.update(value=code_text, visible=bool(code_text))
         stdout_update = gr.update(value=stdout_text, visible=bool(stdout_text))
 
-        # Answer format routing
+        peer_responses = result.get("peer_responses", [])
+        peer_md = format_peer_responses(peer_responses)
+        peer_update = gr.update(value=peer_md, visible=bool(peer_md))
+
         if fmt == "json":
             ans_md = gr.update(value="", visible=False)
             ans_json = gr.update(value=formatted_answer, visible=True)
@@ -400,6 +444,7 @@ def handle_ask(
         return (
             ans_md, ans_json, ans_df,
             chart_update, code_update, stdout_update,
+            peer_update,
             cached_label, verification, budget_str, trace_str, "",
         )
 
@@ -432,7 +477,6 @@ def build_ui():
 
         session_state = gr.State({})
 
-        # ── Session row ──────────────────────────────────────────────────
         with gr.Row():
             with gr.Column(scale=1):
                 new_session_btn = gr.Button("New Session", variant="secondary")
@@ -443,7 +487,6 @@ def build_ui():
 
         gr.Markdown("---")
 
-        # ── Upload section ───────────────────────────────────────────────
         gr.Markdown("## Upload Documents")
         with gr.Row():
             file_input = gr.File(
@@ -461,7 +504,6 @@ def build_ui():
 
         gr.Markdown("---")
 
-        # ── Ask section ──────────────────────────────────────────────────
         gr.Markdown("## Ask a Question")
         question_input = gr.Textbox(
             label="Question",
@@ -482,12 +524,10 @@ def build_ui():
             visible=False,
         )
 
-        # ── Analysis panel (Option 2) ────────────────────────────────────
         with gr.Accordion("Data Analysis (Option 2)", open=False):
             gr.Markdown(
                 "*Enable this when your question requires computation on "
-                "structured data (CSV / Excel). The code agent will write "
-                "and execute Python code to answer the question.*"
+                "structured data (CSV / Excel).*"
             )
             enable_analysis_toggle = gr.Checkbox(
                 label="Enable data analysis",
@@ -506,23 +546,30 @@ def build_ui():
                 )
                 data_description_input = gr.Textbox(
                     label="Data description",
-                    placeholder=(
-                        "Describe the DataFrame: column names, types, and "
-                        "what the data represents. E.g. 'DataFrame df with "
-                        "columns: name (str), sales (int)'"
-                    ),
+                    placeholder="DataFrame df with columns: name (str), sales (int)",
                     lines=3,
                 )
                 data_csv_input = gr.Textbox(
-                    label="Paste CSV data (optional — paste raw CSV here)",
+                    label="Paste CSV data (optional)",
                     placeholder="name,sales\nAlice,150\nBob,200",
                     lines=5,
                 )
 
+        with gr.Accordion("External Sources (Option 3)", open=False):
+            gr.Markdown(
+                "*Add peer Trusty instance URLs to query external knowledge bases. "
+                "Each peer response is tagged with its trust level and freshness. "
+                "One URL per line.*"
+            )
+            peer_urls_input = gr.Textbox(
+                label="Peer Trusty URLs (one per line)",
+                placeholder="http://peer1.example.com:8000\nhttp://peer2.example.com:8000",
+                lines=3,
+            )
+
         ask_btn = gr.Button("Ask", variant="primary")
         error_output = gr.Markdown("")
 
-        # ── Response section ─────────────────────────────────────────────
         gr.Markdown("## Answer")
         cached_indicator = gr.Markdown("")
 
@@ -530,14 +577,12 @@ def build_ui():
         answer_json = gr.Code("", language="json", label="Answer (JSON)", visible=False)
         answer_df = gr.Dataframe(label="Answer (Table)", visible=False)
 
-        # Chart output (Option 2)
         chart_output = gr.Image(
             label="Chart",
             visible=False,
             type="filepath",
         )
 
-        # Code output accordion (Option 2)
         with gr.Accordion("Code Output", open=False):
             gr.Markdown("*Generated Python code and execution result.*")
             with gr.Row():
@@ -555,6 +600,8 @@ def build_ui():
                         visible=False,
                     )
 
+        peer_responses_output = gr.Markdown("", visible=False)
+
         with gr.Row():
             with gr.Column(scale=1):
                 verification_output = gr.Markdown("")
@@ -564,7 +611,6 @@ def build_ui():
         with gr.Accordion("Decision Trace", open=False):
             trace_output = gr.Markdown("")
 
-        # ── Wire events ──────────────────────────────────────────────────
         new_session_btn.click(
             fn=handle_new_session,
             inputs=[],
@@ -596,57 +642,30 @@ def build_ui():
         )
 
         ask_outputs = [
-            answer_md,
-            answer_json,
-            answer_df,
-            chart_output,
-            code_output,
-            stdout_output,
-            cached_indicator,
-            verification_output,
-            budget_output,
-            trace_output,
-            error_output,
+            answer_md, answer_json, answer_df,
+            chart_output, code_output, stdout_output,
+            peer_responses_output,
+            cached_indicator, verification_output,
+            budget_output, trace_output, error_output,
         ]
 
         ask_inputs = [
-            question_input,
-            format_selector,
-            template_input,
-            enable_analysis_toggle,
-            backend_selector,
-            colab_url_input,
-            data_description_input,
-            data_csv_input,
+            question_input, format_selector, template_input,
+            enable_analysis_toggle, backend_selector, colab_url_input,
+            data_description_input, data_csv_input,
+            peer_urls_input,
             session_state,
         ]
 
-        ask_btn.click(
-            fn=handle_ask,
-            inputs=ask_inputs,
-            outputs=ask_outputs,
-            show_progress="minimal",
-        )
-
-        question_input.submit(
-            fn=handle_ask,
-            inputs=ask_inputs,
-            outputs=ask_outputs,
-            show_progress="minimal",
-        )
+        ask_btn.click(fn=handle_ask, inputs=ask_inputs, outputs=ask_outputs,
+                      show_progress="minimal")
+        question_input.submit(fn=handle_ask, inputs=ask_inputs, outputs=ask_outputs,
+                              show_progress="minimal")
 
     return demo
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     demo = build_ui()
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        show_api=False,
-        share=False,
-    )
+    demo.launch(server_name="0.0.0.0", server_port=7860,
+                show_api=False, share=False)

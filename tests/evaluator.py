@@ -1,5 +1,5 @@
 """
-Trusty Chapter 10 — Golden Set Evaluator
+Trusty Chapter 24 — Golden Set Evaluator
 
 Runs every case in tests/golden_set.json against a live Trusty server
 (default: http://localhost:8000) and prints a structured pass/fail report.
@@ -10,7 +10,7 @@ Usage:
 
 Prerequisites:
     - Server must be running: uvicorn app:app --reload
-    - facts.txt, offtopic.txt, injection.txt must exist in tests/fixtures/
+    - facts.txt, offtopic.txt, injection.txt, sales.csv must exist in tests/fixtures/
 """
 
 import re as _re
@@ -59,8 +59,36 @@ def ask_question(
     enable_analysis: bool = False,
     data_description: str = "",
     data_csv: str = "",
+    peer_urls: list | None = None,
 ) -> dict:
-    """POST a question to /ask and return the parsed JSON response."""
+    """POST a question to /ask or /ask_with_external and return the response."""
+
+    # Option 3 path — use /ask_with_external when peer_urls are provided
+    if peer_urls:
+        payload = {
+            "text": question,
+            "peer_urls": peer_urls,
+        }
+        response = requests.post(
+            f"{base_url}/ask_with_external",
+            json=payload,
+            headers={"X-Session-ID": session_id},
+            timeout=60,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Ask_with_external failed (HTTP {response.status_code}): {response.text}"
+            )
+        data = response.json()
+        # Flatten /ask_with_external response to match /ask shape for evaluate_case
+        local = data.get("local_result") or {}
+        result = {**local}
+        result["peer_responses"] = data.get("peer_responses", [])
+        result["peer_count"] = data.get("peer_count", 0)
+        result["local_supported"] = data.get("local_supported", False)
+        return result
+
+    # Option 1 / Option 2 path — use /ask
     payload = {"text": question}
     if enable_analysis:
         payload["enable_analysis"] = True
@@ -90,18 +118,20 @@ def evaluate_case(result: dict, criteria: dict) -> tuple[bool, list[str]]:
     """
     Check a single case's result against its pass_criteria.
     Returns (passed: bool, reasons: list[str]).
+    reasons is empty on a full pass; contains one line per failed check.
     """
     failures = []
+
+    # Strip markdown and normalise whitespace for phrase matching
     _raw = result.get("draft_answer", "")
-    # Strip markdown bold/italic markers and normalize whitespace
-    # so phrase checks work regardless of LLM formatting choices
-    _raw = _re.sub(r'\*+', '', _raw)          # remove * markers
-    _raw = _re.sub(r'\s+', ' ', _raw)         # collapse all whitespace
+    _raw = _re.sub(r'\*+', '', _raw)
+    _raw = _re.sub(r'\s+', ' ', _raw)
     draft = _raw.lower()
+
     parsed = result.get("parsed_report", {})
     code_result = result.get("code_result") or {}
 
-    # Supported / Relevant fields
+    # ── Option 1: Supported / Relevant fields ────────────────────────────
     if "supported" in criteria:
         actual = parsed.get("Supported", "").strip().upper()
         expected = criteria["supported"].upper()
@@ -114,7 +144,7 @@ def evaluate_case(result: dict, criteria: dict) -> tuple[bool, list[str]]:
         if actual != expected:
             failures.append(f"Relevant: expected {expected}, got '{actual}'")
 
-    # Answer content checks
+    # ── Option 1: Answer content checks ──────────────────────────────────
     for phrase in criteria.get("answer_must_contain", []):
         if phrase.lower() not in draft:
             failures.append(f"Answer missing expected phrase: '{phrase}'")
@@ -123,7 +153,7 @@ def evaluate_case(result: dict, criteria: dict) -> tuple[bool, list[str]]:
         if phrase.lower() in draft:
             failures.append(f"Answer contains forbidden phrase: '{phrase}'")
 
-    # Option 2: code_result checks
+    # ── Option 2: code_result checks ─────────────────────────────────────
     if "code_result_supported" in criteria:
         expected = criteria["code_result_supported"]
         actual = code_result.get("supported", False)
@@ -152,6 +182,40 @@ def evaluate_case(result: dict, criteria: dict) -> tuple[bool, list[str]]:
                 f"verification_mode: expected '{expected}', got '{actual}'"
             )
 
+    # ── Option 3: route check ─────────────────────────────────────────────
+    if "route" in criteria:
+        actual = result.get("route", "")
+        expected = criteria["route"]
+        if actual != expected:
+            failures.append(
+                f"route: expected '{expected}', got '{actual}'"
+            )
+
+    # ── Option 3: peer response checks ───────────────────────────────────
+    if "peer_count" in criteria:
+        actual = result.get("peer_count", 0)
+        expected = criteria["peer_count"]
+        if actual != expected:
+            failures.append(
+                f"peer_count: expected {expected}, got {actual}"
+            )
+
+    if criteria.get("peer_error_present"):
+        peer_responses = result.get("peer_responses", [])
+        has_error = any(p.get("error") for p in peer_responses)
+        if not has_error:
+            failures.append("peer_error_present: expected at least one peer error")
+
+    if "peer_trust_level" in criteria:
+        peer_responses = result.get("peer_responses", [])
+        expected = criteria["peer_trust_level"]
+        for p in peer_responses:
+            actual = p.get("trust_level", "")
+            if actual != expected:
+                failures.append(
+                    f"peer trust_level: expected '{expected}', got '{actual}'"
+                )
+
     return (len(failures) == 0), failures
 
 
@@ -178,7 +242,7 @@ def run_evaluation(base_url: str) -> int:
 
     # Group cases by fixture so we only upload each fixture once.
     # Each fixture gets its own session_id so sessions don't bleed
-    # into each other — the same isolation Chapter 7 tested manually.
+    # into each other.
     fixture_sessions: dict[str, str] = {}
 
     results = []
@@ -217,6 +281,7 @@ def run_evaluation(base_url: str) -> int:
                 enable_analysis=case.get("enable_analysis", False),
                 data_description=case.get("data_description", ""),
                 data_csv=case.get("data_csv", ""),
+                peer_urls=case.get("peer_urls"),
             )
         except Exception as e:
             print(f"         Ask      : FAILED — {e}")
@@ -231,11 +296,18 @@ def run_evaluation(base_url: str) -> int:
 
         print(f"         Answer   : {draft[:120]}{'...' if len(draft) > 120 else ''}")
         print(f"         Verified : Supported={supported}  Relevant={relevant}")
+
         if case.get("enable_analysis"):
             cr = result.get("code_result") or {}
             print(f"         Analysis : supported={cr.get('supported')}  "
                   f"backend={cr.get('backend')}  "
                   f"mode={result.get('verification_mode')}")
+
+        if case.get("peer_urls"):
+            peers = result.get("peer_responses", [])
+            print(f"         A2A      : peer_count={result.get('peer_count', 0)}  "
+                  f"route={result.get('route', '?')}  "
+                  f"errors={sum(1 for p in peers if p.get('error'))}")
 
         passed, failures = evaluate_case(result, criteria)
 
@@ -244,7 +316,7 @@ def run_evaluation(base_url: str) -> int:
         else:
             print(f"         Result   : FAIL")
             for reason in failures:
-                print(f"                    → {reason}")
+                print(f"                    -> {reason}")
             print()
 
         results.append((case_id, passed, failures))
@@ -266,11 +338,11 @@ def run_evaluation(base_url: str) -> int:
             if not passed:
                 print(f"    [{case_id}]")
                 for reason in failures:
-                    print(f"      → {reason}")
+                    print(f"      -> {reason}")
         print()
         return 1
 
-    print(f"\n  All {total} cases passed — golden set gate cleared.\n")
+    print(f"\n  All {total} cases passed -- golden set gate cleared.\n")
     return 0
 
 
