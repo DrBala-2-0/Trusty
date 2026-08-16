@@ -4,7 +4,10 @@ Given a user question and a structured data context (column names + sample rows)
 writes Python code, executes it in the sandbox, and returns the result.
 The agent never knows which sandbox backend ran — that is sandbox_client's concern.
 """
+
 from __future__ import annotations
+
+import re
 
 from typing import Optional
 
@@ -77,12 +80,16 @@ def run_code_agent(
             f"{_CODE_SYSTEM}\n\n{prompt}"
         ).strip()
         # Strip markdown fences if the model adds them despite instructions
-        if code.startswith("```"):
+        # Strip markdown fences if the model adds them despite instructions
+        if "```" in code:
             lines = code.splitlines()
             code = "\n".join(
                 l for l in lines
                 if not l.strip().startswith("```")
             ).strip()
+        # Fix common LLM spacing errors: "importpandas" → "import pandas"
+        code = re.sub(r'\bimport(\w)', r'import \1', code)
+        code = re.sub(r'\bfrom(\w)', r'from \1', code)            
     except Exception as e:
         logger.error(f"[code_agent] LLM call failed: {e}")
         return _failure(code="", error=f"Code generation failed: {e}")

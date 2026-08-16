@@ -30,6 +30,10 @@ class AgentState(TypedDict):
     data_description: str
     data_csv: Optional[str]
     code_result: Optional[dict]
+    # Option 2 verification fields (Chapter 19)
+    code_raw_report: Optional[str]
+    code_parsed_report: Optional[dict]
+    verification_mode: str    
 
 class AgentWorkflow:
     def __init__(self):
@@ -114,7 +118,9 @@ class AgentWorkflow:
     def _verification_step(self, state: AgentState) -> Dict:
         tracer: Optional[Tracer] = state.get("tracer")
         result = self.verifier.check(
-            state["draft_answer"], state["documents"]
+            state["draft_answer"],
+            state["documents"],
+            code_result=state.get("code_result"),
         )
         parsed = result["parsed_report"]
 
@@ -130,6 +136,9 @@ class AgentWorkflow:
         return {
             "verification_report": result["raw_report"],
             "parsed_report": parsed,
+            "code_raw_report": result.get("code_raw_report"),
+            "code_parsed_report": result.get("code_parsed_report"),
+            "verification_mode": result.get("verification_mode", "document"),
         }
 
     def _decide_next_step(self, state: AgentState) -> str:
@@ -193,6 +202,9 @@ class AgentWorkflow:
             data_description=data_description,
             data_csv=data_csv,
             code_result=None,
+            code_raw_report=None,
+            code_parsed_report=None,
+            verification_mode="document",            
         )
         final_state = self.compiled_workflow.invoke(initial_state)
 
@@ -207,4 +219,7 @@ class AgentWorkflow:
             "verification_report": final_state.get("verification_report", ""),
             "parsed_report": final_state.get("parsed_report", {}),
             "code_result": final_state.get("code_result"),
+            "code_raw_report": final_state.get("code_raw_report"),
+            "code_parsed_report": final_state.get("code_parsed_report"),
+            "verification_mode": final_state.get("verification_mode", "document"),
         }
