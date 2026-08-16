@@ -195,6 +195,7 @@ def ask(q: AskRequest, session_id: str = Depends(resolve_session_id)):
             colab_url=q.colab_url,
             data_description=q.data_description,
             data_csv=q.data_csv,
+            routing_path="auto",
         )
 
         # Store chunk_sources in result so cache hits can apply formatting

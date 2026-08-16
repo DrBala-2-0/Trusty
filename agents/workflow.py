@@ -9,6 +9,7 @@ from .verification_agent import VerificationAgent
 from .relevance_checker import RelevanceChecker
 
 from agents.code_agent import run_code_agent
+from agents.routing_agent import route
 
 MAX_RESEARCH_ATTEMPTS = 2
 
@@ -33,7 +34,11 @@ class AgentState(TypedDict):
     # Option 2 verification fields (Chapter 19)
     code_raw_report: Optional[str]
     code_parsed_report: Optional[dict]
-    verification_mode: str    
+    verification_mode: str
+    # Option 3 routing fields (Chapter 22)
+    route: str                          # "rag_only" / "rag_with_analysis" / "rag_with_external" / "rag_with_analysis_and_external"
+    peer_urls: List[str]                # peer Trusty instances to query when route includes external
+    peer_responses: List[dict]          # A2A responses from peers   
 
 class AgentWorkflow:
     def __init__(self):
@@ -42,13 +47,39 @@ class AgentWorkflow:
         self.relevance_checker = RelevanceChecker()
         self.compiled_workflow = self.build_workflow()
 
+    def _routing_step(self, state: AgentState) -> Dict:
+        tracer: Optional[Tracer] = state.get("tracer")
+        # Only auto-route if caller hasn't already set a route
+        current_route = state.get("route", "")
+        if not current_route or current_route == "auto":
+            determined_route = route(state["question"])
+        else:
+            determined_route = current_route
+
+        # Routing determines whether analysis and/or external are enabled
+        enable_analysis = determined_route in (
+            "rag_with_analysis", "rag_with_analysis_and_external"
+        )
+
+        if tracer:
+            tracer.record_outcome(f"route:{determined_route}")
+
+        logger.info(f"[workflow] route={determined_route}")
+
+        return {
+            "route": determined_route,
+            "enable_analysis": enable_analysis,
+        }
+
     def build_workflow(self):
         workflow = StateGraph(AgentState)
+        workflow.add_node("router", self._routing_step)
         workflow.add_node("check_relevance", self._check_relevance_step)
         workflow.add_node("research", self._research_step)
         workflow.add_node("code", self._code_step)
         workflow.add_node("verify", self._verification_step)
-        workflow.set_entry_point("check_relevance")
+        workflow.set_entry_point("router")
+        workflow.add_edge("router", "check_relevance")
         workflow.add_conditional_edges(
             "check_relevance",
             self._decide_after_relevance_check,
@@ -184,6 +215,8 @@ class AgentWorkflow:
         colab_url: Optional[str] = None,
         data_description: str = "",
         data_csv: Optional[str] = None,
+        routing_path: str = "auto",            # "auto" triggers the routing agent
+        peer_urls: Optional[List[str]] = None,
     ) -> Dict:
         initial_state = AgentState(
             question=question,
@@ -204,7 +237,11 @@ class AgentWorkflow:
             code_result=None,
             code_raw_report=None,
             code_parsed_report=None,
-            verification_mode="document",            
+            verification_mode="document",
+            # Option 3 fields
+            route=routing_path,
+            peer_urls=peer_urls or [],
+            peer_responses=[],            
         )
         final_state = self.compiled_workflow.invoke(initial_state)
 
@@ -222,4 +259,6 @@ class AgentWorkflow:
             "code_raw_report": final_state.get("code_raw_report"),
             "code_parsed_report": final_state.get("code_parsed_report"),
             "verification_mode": final_state.get("verification_mode", "document"),
+            "route": final_state.get("route", "rag_only"),
+            "peer_responses": final_state.get("peer_responses", []),
         }
