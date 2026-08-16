@@ -8,6 +8,8 @@ from .research_agent import ResearchAgent
 from .verification_agent import VerificationAgent
 from .relevance_checker import RelevanceChecker
 
+from agents.code_agent import run_code_agent
+
 MAX_RESEARCH_ATTEMPTS = 2
 
 
@@ -21,7 +23,13 @@ class AgentState(TypedDict):
     research_attempts: int
     tracer: Optional[object]   # Tracer instance, injected per request
     response_format: str       # Output format requested by the caller
-
+    # Option 2 fields (Chapter 18) — present only when enable_analysis=True
+    enable_analysis: bool
+    sandbox_backend: str
+    colab_url: Optional[str]
+    data_description: str
+    data_csv: Optional[str]
+    code_result: Optional[dict]
 
 class AgentWorkflow:
     def __init__(self):
@@ -34,6 +42,7 @@ class AgentWorkflow:
         workflow = StateGraph(AgentState)
         workflow.add_node("check_relevance", self._check_relevance_step)
         workflow.add_node("research", self._research_step)
+        workflow.add_node("code", self._code_step)
         workflow.add_node("verify", self._verification_step)
         workflow.set_entry_point("check_relevance")
         workflow.add_conditional_edges(
@@ -41,7 +50,8 @@ class AgentWorkflow:
             self._decide_after_relevance_check,
             {"relevant": "research", "irrelevant": END},
         )
-        workflow.add_edge("research", "verify")
+        workflow.add_edge("research", "code")
+        workflow.add_edge("code", "verify")
         workflow.add_conditional_edges(
             "verify",
             self._decide_next_step,
@@ -85,7 +95,22 @@ class AgentWorkflow:
             "draft_answer": result["draft_answer"],
             "research_attempts": attempt,
         }
+    
+    def _code_step(self, state: AgentState) -> Dict:
+        if not state.get("enable_analysis"):
+            return state   # pass-through — Option 1 path unchanged
 
+        tracer: Optional[Tracer] = state.get("tracer")
+        result = run_code_agent(
+            question=state["question"],
+            data_description=state.get("data_description", ""),
+            data_csv=state.get("data_csv"),
+            sandbox_backend=state.get("sandbox_backend", "docker"),
+            colab_url=state.get("colab_url"),
+            tracer=tracer,
+        )
+        return {**state, "code_result": result}
+    
     def _verification_step(self, state: AgentState) -> Dict:
         tracer: Optional[Tracer] = state.get("tracer")
         result = self.verifier.check(
@@ -145,6 +170,11 @@ class AgentWorkflow:
         documents: list,
         tracer: Optional[Tracer] = None,
         response_format: str = "text",
+        enable_analysis: bool = False,
+        sandbox_backend: str = "docker",
+        colab_url: Optional[str] = None,
+        data_description: str = "",
+        data_csv: Optional[str] = None,
     ) -> Dict:
         initial_state = AgentState(
             question=question,
@@ -156,6 +186,13 @@ class AgentWorkflow:
             research_attempts=0,
             tracer=tracer,
             response_format=response_format,
+            # Option 2 fields
+            enable_analysis=enable_analysis,
+            sandbox_backend=sandbox_backend,
+            colab_url=colab_url,
+            data_description=data_description,
+            data_csv=data_csv,
+            code_result=None,
         )
         final_state = self.compiled_workflow.invoke(initial_state)
 
@@ -169,4 +206,5 @@ class AgentWorkflow:
             "draft_answer": final_state["draft_answer"],
             "verification_report": final_state.get("verification_report", ""),
             "parsed_report": final_state.get("parsed_report", {}),
+            "code_result": final_state.get("code_result"),
         }

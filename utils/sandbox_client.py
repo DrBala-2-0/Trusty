@@ -28,7 +28,8 @@ class SandboxResult:
 
 
 def run(code: str, backend: str = "docker",
-        colab_url: Optional[str] = None) -> SandboxResult:
+        colab_url: Optional[str] = None,
+        data_csv: Optional[str] = None) -> SandboxResult:
     """
     Execute `code` in the chosen sandbox backend.
     backend: "docker" or "colab"
@@ -38,7 +39,7 @@ def run(code: str, backend: str = "docker",
     start = time.monotonic()
 
     if backend == "docker":
-        result = _run_docker(code)
+        result = _run_docker(code, data_csv=data_csv)
     elif backend == "colab":
         if not colab_url:
             return SandboxResult(
@@ -67,8 +68,8 @@ def run(code: str, backend: str = "docker",
 # Docker backend
 # ---------------------------------------------------------------------------
 
-def _run_docker(code: str) -> SandboxResult:
-    payload = json.dumps({"code": code})
+def _run_docker(code: str, data_csv: Optional[str] = None) -> SandboxResult:
+    payload = json.dumps({"code": code, "data_csv": data_csv})
     try:
         proc = subprocess.run(
             [

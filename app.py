@@ -103,14 +103,20 @@ def upload(
 
 
 
-class Question(BaseModel):
+class AskRequest(BaseModel):
     text: str
     response_format: str = "text"
     response_template: str | None = None
+    # Option 2 fields (Chapter 18)
+    enable_analysis: bool = False
+    sandbox_backend: str = "docker"
+    colab_url: Optional[str] = None
+    data_description: str = ""
+    data_csv: Optional[str] = None
 
 
 @app.post("/ask")
-def ask(q: Question, session_id: str = Depends(resolve_session_id)):
+def ask(q: AskRequest, session_id: str = Depends(resolve_session_id)):
     if not q.text.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
     if session_id not in retrievers:
@@ -182,6 +188,11 @@ def ask(q: Question, session_id: str = Depends(resolve_session_id)):
             documents,
             tracer=tracer,
             response_format=q.response_format,
+            enable_analysis=q.enable_analysis,
+            sandbox_backend=q.sandbox_backend,
+            colab_url=q.colab_url,
+            data_description=q.data_description,
+            data_csv=q.data_csv,
         )
 
         # Store chunk_sources in result so cache hits can apply formatting
@@ -196,8 +207,10 @@ def ask(q: Question, session_id: str = Depends(resolve_session_id)):
             result["draft_answer"],
             result.get("parsed_report", {}),
             documents,
+            code_result=result.get("code_result"),
         )
         response_cache.set(q.text, docs, result)
+
         logger.info(
             f"[{session_id}] Answered question: {q.text[:60]!r} "
             f"(budget: {budget.used:.0f}/{budget.limit:.0f})"

@@ -1,0 +1,1 @@
+﻿{"text": "Who has the highest sales and what is the total of all sales?", "enable_analysis": true, "data_description": "DataFrame df with columns: name (string), sales (integer).", "data_csv": "name,sales\nAlice,150\nBob,200\nCarol,175"}

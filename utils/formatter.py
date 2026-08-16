@@ -37,9 +37,12 @@ VALID_FORMATS = {"text", "json", "markdown_table", "template"}
 # Placeholders valid at Option 1 stage
 OPTION1_PLACEHOLDERS = {"answer", "sources", "verification", "confidence"}
 
-# Placeholders that require Option 2 or 3 -- rejected now, reserved for later
+# Placeholders unlocked at Option 2 stage
+OPTION2_PLACEHOLDERS = {"chart", "code_output"}
+
+# Placeholders that require Option 3 -- rejected now, reserved for later
 FUTURE_PLACEHOLDERS = {
-    "chart", "image", "visualization", "code_output",   # Option 2
+    "image", "visualization",                            # still deferred
     "external_data", "live_table",                       # Option 3
 }
 
@@ -72,21 +75,22 @@ def validate_format(response_format: str, response_template: Optional[str]) -> N
             raise FormatterError(
                 "response_template is required when response_format='template'."
             )
-        # Check for future-option placeholders
+        
+        # Check for still-future (Option 3) placeholders
         placeholders = set(_PLACEHOLDER_RE.findall(response_template))
         future_used = placeholders & FUTURE_PLACEHOLDERS
         if future_used:
             raise FormatterError(
-                f"Template contains placeholder(s) not available at Option 1 stage: "
-                f"{sorted(future_used)}. These require Option 2 (code execution) or "
-                f"Option 3 (A2A data) to be enabled. Available placeholders: "
-                f"{sorted(OPTION1_PLACEHOLDERS)}."
+                f"Template contains placeholder(s) not yet available: "
+                f"{sorted(future_used)}. These require Option 3 (A2A data) "
+                f"to be enabled. Available placeholders: "
+                f"{sorted(OPTION1_PLACEHOLDERS | OPTION2_PLACEHOLDERS)}."
             )
-        unknown = placeholders - OPTION1_PLACEHOLDERS - FUTURE_PLACEHOLDERS
+        unknown = placeholders - OPTION1_PLACEHOLDERS - OPTION2_PLACEHOLDERS - FUTURE_PLACEHOLDERS
         if unknown:
             raise FormatterError(
                 f"Unknown placeholder(s) in template: {sorted(unknown)}. "
-                f"Available at Option 1 stage: {sorted(OPTION1_PLACEHOLDERS)}."
+                f"Available: {sorted(OPTION1_PLACEHOLDERS | OPTION2_PLACEHOLDERS)}."
             )
 
     if response_format != "template" and response_template:
@@ -141,6 +145,22 @@ def _extract_verification(parsed_report: dict) -> str:
     return f"Supported: {supported} | Relevant: {relevant}"
 
 
+def _fill_option2(template: str, code_result: Optional[dict]) -> str:
+    """Fill Option 2 placeholders from a code_result dict."""
+    if code_result is None:
+        for ph in ("{chart}", "{code_output}"):
+            template = template.replace(ph, "")
+        return template
+
+    chart_line = "[chart attached]" if code_result.get("chart_b64") else ""
+    code_output = code_result.get("stdout", "").strip()
+
+    return (
+        template
+        .replace("{chart}", chart_line)
+        .replace("{code_output}", code_output)
+    )
+
 # ---------------------------------------------------------------------------
 # Format application
 # ---------------------------------------------------------------------------
@@ -151,6 +171,7 @@ def apply_format(
     draft_answer: str,
     parsed_report: dict,
     documents: list,
+    code_result: Optional[dict] = None,
 ) -> dict:
     """Shape the pipeline result into the requested format.
 
@@ -224,6 +245,7 @@ def apply_format(
             verification=verification,
             confidence=confidence,
         )
+        filled = _fill_option2(filled, code_result)
         return {
             "formatted_answer": filled,
             "response_format": "template",
