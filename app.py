@@ -16,6 +16,8 @@ from utils.budget import Budget, BudgetExceededError
 from utils.cache import ResponseCache
 from utils.formatter import FormatterError, apply_format, validate_format
 from config.settings import settings
+from a2a.client import ask_peer
+from a2a.trust import trust_registry
 
 app = FastAPI(title="Trusty (Chapter 7 — multi-user retrieval)")
 workflow = AgentWorkflow()
@@ -229,7 +231,128 @@ def ask(q: AskRequest, session_id: str = Depends(resolve_session_id)):
             detail=f"Something went wrong processing this question: {e}",
         )
 
-    
+
+class AskWithExternalRequest(BaseModel):
+    text: str
+    peer_urls: list[str]                  # list of peer Trusty instances to query
+    response_format: str = "text"
+    response_template: str | None = None
+    context: str = ""                     # optional context to pass to peers
+
+
+@app.post("/ask_with_external")
+def ask_with_external(
+    q: AskWithExternalRequest,
+    session_id: str = Depends(resolve_session_id),
+):
+    """
+    Ask a question using both local documents and peer Trusty instances.
+
+    Runs the local /ask pipeline first. If the local answer is not
+    supported or no documents are indexed, also queries each peer in
+    peer_urls via A2A and merges the responses. Each peer response is
+    tagged with its trust level and provenance.
+
+    Returns the local result plus a list of peer_responses, each with
+    answer, trust_level, supported, sources, and freshness_ts.
+    """
+    if not q.text.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+    if not q.peer_urls:
+        raise HTTPException(status_code=400, detail="At least one peer_url is required.")
+
+    # ── Step 1: run local pipeline if documents are indexed ──────────────
+    local_result = None
+    local_supported = False
+
+    if session_id in retrievers:
+        try:
+            docs = session_docs.get(session_id, [])
+            budget = session_budgets.setdefault(
+                session_id,
+                Budget(
+                    dimension="llm_calls",
+                    limit=SESSION_LLM_CALL_LIMIT,
+                    warn_at=0.8,
+                ),
+            )
+            budget.check()
+            budget.consume()
+
+            tracer = Tracer()
+            documents = retrievers[session_id].invoke(q.text)
+            tracer.record_retrieval(session_id, len(documents), documents)
+            result = workflow.full_pipeline(
+                q.text,
+                documents,
+                tracer=tracer,
+                response_format=q.response_format,
+            )
+            result["chunk_sources"] = [
+                {"source": doc.metadata.get("source", "unknown")}
+                for doc in documents
+            ]
+            formatted = apply_format(
+                q.response_format,
+                q.response_template,
+                result["draft_answer"],
+                result.get("parsed_report", {}),
+                documents,
+            )
+            local_result = {
+                **result,
+                "cached": False,
+                "trace": tracer.to_dict(),
+                "budget": budget.summary(),
+                **formatted,
+            }
+            local_supported = (
+                result.get("parsed_report", {})
+                .get("Supported", "NO")
+                .strip()
+                .upper() == "YES"
+            )
+        except BudgetExceededError as e:
+            logger.warning(f"[{session_id}] Budget exhausted for ask_with_external: {e}")
+        except Exception as e:
+            logger.error(f"[{session_id}] Local pipeline failed: {e}")
+
+    # ── Step 2: query peers ───────────────────────────────────────────────
+    # Always query peers so the caller gets external data regardless of
+    # whether local pipeline succeeded — let the caller decide which to use.
+    peer_responses = []
+    for peer_url in q.peer_urls:
+        a2a_response = ask_peer(
+            peer_url=peer_url,
+            question=q.text,
+            context=q.context,
+            requester=settings.A2A_REQUESTER_ID,
+        )
+        peer_responses.append({
+            "peer_url": a2a_response.peer_url,
+            "answer": a2a_response.answer,
+            "supported": a2a_response.supported,
+            "relevant": a2a_response.relevant,
+            "trust_level": a2a_response.trust_level,
+            "freshness_ts": a2a_response.freshness_ts,
+            "sources": a2a_response.sources,
+            "verification_mode": a2a_response.verification_mode,
+            "error": a2a_response.error,
+        })
+        logger.info(
+            f"[{session_id}] A2A peer={peer_url} "
+            f"supported={a2a_response.supported} "
+            f"trust={a2a_response.trust_level}"
+        )
+
+    return {
+        "local_result": local_result,
+        "local_supported": local_supported,
+        "peer_responses": peer_responses,
+        "peer_count": len(peer_responses),
+    }
+
+
 @app.post("/evaluate")
 def evaluate(base_url: str = "http://localhost:8000"):
     """Run the golden test set against a live server and return structured results.

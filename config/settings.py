@@ -35,5 +35,12 @@ class Settings:
     SANDBOX_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_TIMEOUT_SECONDS", "30"))
     SANDBOX_DOCKER_IMAGE: str = os.getenv("SANDBOX_DOCKER_IMAGE", "trusty-sandbox:latest")
 
+    # A2A client (Option 3 — Chapter 21)
+    A2A_PEER_TIMEOUT_SECONDS: int = int(os.getenv("A2A_PEER_TIMEOUT_SECONDS", "30"))
+    A2A_REQUESTER_ID: str = os.getenv("A2A_REQUESTER_ID", "trusty-local")
+
+    # MCP server (Option 3 — Chapter 21)
+    MCP_SERVER_PORT: int = int(os.getenv("MCP_SERVER_PORT", "8001"))
+
 
 settings = Settings()
